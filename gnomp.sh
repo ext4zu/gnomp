@@ -1,160 +1,130 @@
 #!/usr/bin/env bash
-BACKUP_DIR="$HOME/fedora-gnome-backup"
-DATE=$(date +%Y%m%d)
-ARCHIVE="$HOME/gnome-setup-$DATE.tar.gz"
+# Fedora 43 GNOME Backup & Restore Script
+# by ChatGPT + Iman
 
-# --- FUNCTION: Dependency Check ---
+set -e
+
+BACKUP_DIR="$HOME/gnome-backup-$(date +%Y%m%d-%H%M%S)"
+RESTORE_DIR="$HOME/gnome-backup-latest"
+
+# ====== DEPENDENCY CHECK ======
 check_deps() {
-    echo "Checking essential dependencies..."
-    DEPS=(dconf gsettings tar gnome-extensions curl wget unzip sudo fc-cache)
-    MISSING=0
-    for pkg in "${DEPS[@]}"; do
+    echo "→ Checking dependencies..."
+    REQUIRED=("curl" "wget" "unzip" "jq" "dconf" "gnome-extensions" "tar" "gsettings")
+    MISSING=()
+
+    for pkg in "${REQUIRED[@]}"; do
         if ! command -v "$pkg" &>/dev/null; then
-            echo "ERROR: Missing dependency: $pkg"
-            MISSING=1
+            MISSING+=("$pkg")
         fi
     done
-    if [ "$MISSING" -eq 1 ]; then
-        echo "FAILURE: Critical dependencies are missing. Install them and run the script again:"
-        echo "   sudo dnf install gnome-extensions-app curl wget unzip"
-        exit 1
+
+    if [ ${#MISSING[@]} -ne 0 ]; then
+        echo "⚠️ Installing missing packages: ${MISSING[*]}"
+        sudo dnf install -y "${MISSING[@]}"
     else
-        echo "All required dependencies are present."
+        echo "✅ All dependencies present."
     fi
 }
 
-# --- FUNCTION: Backup ---
+# ====== BACKUP ======
 backup() {
-    echo "Initiating GNOME 47 environment backup..."
+    echo "🧩 Starting GNOME backup..."
     mkdir -p "$BACKUP_DIR"
 
-    echo "Dumping GNOME and extension settings..."
-    dconf dump /org/gnome/ > "$BACKUP_DIR/dconf-gnome.conf"
-    dconf dump /org/gnome/shell/extensions/ > "$BACKUP_DIR/dconf-extensions.conf"
+    echo "→ Backing up GNOME settings..."
+    dconf dump / > "$BACKUP_DIR/dconf-settings.ini"
 
-    echo "Saving list of installed extensions..."
-    gnome-extensions list > "$BACKUP_DIR/extensions-list.txt"
+    echo "→ Saving enabled extensions list..."
+    gnome-extensions list --enabled > "$BACKUP_DIR/extensions-list.txt"
 
-    echo "Backing up user customizations (themes, icons, fonts)..."
-    cp -r ~/.themes "$BACKUP_DIR/" 2>/dev/null
-    cp -r ~/.icons "$BACKUP_DIR/" 2>/dev/null
-    cp -r ~/.local/share/fonts "$BACKUP_DIR/fonts" 2>/dev/null
+    echo "→ Backing up local extensions..."
+    mkdir -p "$BACKUP_DIR/extensions"
+    cp -r ~/.local/share/gnome-shell/extensions/* "$BACKUP_DIR/extensions/" 2>/dev/null || true
 
-    echo "Backing up current wallpaper..."
-    WALLPAPER=$(gsettings get org.gnome.desktop.background picture-uri | sed "s|'file://||;s|'||g")
-    if [ -f "$WALLPAPER" ]; then
-        cp "$WALLPAPER" "$BACKUP_DIR/wallpaper.png"
-    fi
+    echo "→ Backing up fonts, icons, and cursor themes..."
+    mkdir -p "$BACKUP_DIR/themes"
+    cp -r ~/.icons ~/.local/share/icons ~/.themes ~/.local/share/themes ~/.fonts ~/.local/share/fonts "$BACKUP_DIR/themes/" 2>/dev/null || true
 
-    echo "Backing up system-wide resources (themes, icons, fonts, extensions) - SUDO REQUIRED."
-    sudo cp -r /usr/share/themes "$BACKUP_DIR/usr_themes" 2>/dev/null
-    sudo cp -r /usr/share/icons "$BACKUP_DIR/usr_icons" 2>/dev/null
-    sudo cp -r /usr/share/fonts "$BACKUP_DIR/usr_fonts" 2>/dev/null
-    sudo cp -r /usr/share/gnome-shell/extensions "$BACKUP_DIR/usr_extensions" 2>/dev/null
+    echo "→ Backing up GDM theme (if custom)..."
+    sudo cp -r /usr/share/gnome-shell/theme "$BACKUP_DIR/gdm-theme" 2>/dev/null || true
 
-    echo "Backing up GDM (login screen) theme..."
-    sudo cp -r /usr/share/gnome-shell/theme "$BACKUP_DIR/gdm-theme" 2>/dev/null
+    echo "→ Compressing backup..."
+    tar czf "$BACKUP_DIR.tar.gz" -C "$(dirname "$BACKUP_DIR")" "$(basename "$BACKUP_DIR")"
 
-    echo "Creating compressed backup archive..."
-    tar -czf "$ARCHIVE" -C "$BACKUP_DIR" .
-    echo "Backup procedure finished."
-    echo "Archive location: $ARCHIVE"
+    echo "✅ Backup completed! File saved at: $BACKUP_DIR.tar.gz"
 }
 
-# --- FUNCTION: Restore ---
+# ====== RESTORE ======
 restore() {
-    read -p "Enter path to your backup archive (.tar.gz): " ARCHIVE
-    if [ ! -f "$ARCHIVE" ]; then
-        echo "ERROR: Archive file not found!"; exit 1
+    echo "🧩 Starting GNOME restore..."
+    echo "Enter path to your backup .tar.gz file:"
+    read -r TARFILE
+
+    if [ ! -f "$TARFILE" ]; then
+        echo "❌ File not found!"
+        exit 1
     fi
 
-    echo "Initiating GNOME 47 environment restore..."
-    mkdir -p "$BACKUP_DIR"
-    tar -xzf "$ARCHIVE" -C "$BACKUP_DIR"
+    mkdir -p "$RESTORE_DIR"
+    tar xzf "$TARFILE" -C "$RESTORE_DIR" --strip-components=1
 
-    echo "Restoring GNOME settings..."
-    dconf load /org/gnome/ < "$BACKUP_DIR/dconf-gnome.conf" 2>/dev/null
-    dconf load /org/gnome/shell/extensions/ < "$BACKUP_DIR/dconf-extensions.conf" 2>/dev/null
+    echo "→ Restoring dconf settings..."
+    dconf load / < "$RESTORE_DIR/dconf-settings.ini"
 
-    echo "Restoring user customizations (themes, icons, fonts)..."
-    cp -r "$BACKUP_DIR/.themes" ~ 2>/dev/null
-    cp -r "$BACKUP_DIR/.icons" ~ 2>/dev/null
-    mkdir -p ~/.local/share/fonts
-    cp -r "$BACKUP_DIR/fonts"/* ~/.local/share/fonts/ 2>/dev/null
+    echo "→ Restoring local extensions..."
+    mkdir -p ~/.local/share/gnome-shell/extensions/
+    cp -r "$RESTORE_DIR/extensions/"* ~/.local/share/gnome-shell/extensions/ 2>/dev/null || true
 
-    echo "Restoring wallpaper settings..."
-    if [ -f "$BACKUP_DIR/wallpaper.png" ]; then
-        gsettings set org.gnome.desktop.background picture-uri-dark "file://$BACKUP_DIR/wallpaper.png"
-        gsettings set org.gnome.desktop.background picture-uri "file://$BACKUP_DIR/wallpaper.png"
-    fi
-
-    echo "Restoring system-wide resources - SUDO REQUIRED."
-    sudo cp -r "$BACKUP_DIR/usr_themes"/* /usr/share/themes/ 2>/dev/null
-    sudo cp -r "$BACKUP_DIR/usr_icons"/* /usr/share/icons/ 2>/dev/null
-    sudo cp -r "$BACKUP_DIR/usr_fonts"/* /usr/share/fonts/ 2>/dev/null
-    sudo cp -r "$BACKUP_DIR/usr_extensions"/* /usr/share/gnome-shell/extensions/ 2>/dev/null
-
-    echo "Restoring GDM (login screen) theme..."
-    sudo cp -r "$BACKUP_DIR/gdm-theme"/* /usr/share/gnome-shell/theme/ 2>/dev/null
-
-    echo "Attempting automatic reinstallation of online extensions..."
+    echo "→ Reinstalling online extensions (if missing)..."
     while read -r ext_uuid; do
         [ -z "$ext_uuid" ] && continue
         if ! gnome-extensions info "$ext_uuid" &>/dev/null; then
-            echo "Installing missing extension: $ext_uuid"
+            echo "🌐 Installing $ext_uuid..."
             VERSION=$(gnome-shell --version | awk '{print $3}' | cut -d'.' -f1,2)
             INFO_URL="https://extensions.gnome.org/extension-info/?uuid=$ext_uuid&shell_version=$VERSION"
             ZIP_PATH=$(curl -s "$INFO_URL" | grep -oP '(?<=\"download_url\": \")[^\"]*')
             if [ -n "$ZIP_PATH" ]; then
+                mkdir -p ~/.local/share/gnome-shell/extensions/"$ext_uuid"
                 wget -qO /tmp/ext.zip "https://extensions.gnome.org$ZIP_PATH"
                 unzip -oq /tmp/ext.zip -d ~/.local/share/gnome-shell/extensions/"$ext_uuid"
-                echo "Extension $ext_uuid installed successfully."
+                echo "✅ $ext_uuid installed"
             else
-                echo "WARNING: Failed to find download URL for $ext_uuid"
+                echo "⚠️ Could not fetch $ext_uuid"
             fi
         fi
-        gnome-extensions enable "$ext_uuid" 2>/dev/null
-    done < "$BACKUP_DIR/extensions-list.txt"
+        gnome-extensions enable "$ext_uuid" 2>/dev/null || true
+    done < "$RESTORE_DIR/extensions-list.txt"
 
-    echo "Refreshing font cache and desktop environment..."
-    fc-cache -rv > /dev/null
-    sudo update-desktop-database > /dev/null 2>&1
-    echo "Restore procedure finished. Log out or run 'Alt+F2' then 'r' to reload GNOME Shell."
+    echo "→ Restoring themes and fonts..."
+    cp -r "$RESTORE_DIR/themes/"* ~ 2>/dev/null || true
+    sudo cp -r "$RESTORE_DIR/gdm-theme" /usr/share/gnome-shell/theme 2>/dev/null || true
+
+    echo "→ Applying restored GNOME settings..."
+    gsettings reset-recursively org.gnome.shell || true
+    gsettings reset-recursively org.gnome.desktop.interface || true
+    gsettings reset-recursively org.gnome.desktop.wm.preferences || true
+    gsettings set org.gnome.shell enabled-extensions "$(cat "$RESTORE_DIR/extensions-list.txt" | jq -R -s -c 'split("\n")[:-1]')"
+
+    echo "→ Reloading GNOME Shell..."
+    busctl --user call org.gnome.Shell /org/gnome/Shell org.gnome.Shell Eval "s" 'Meta.restart("Restoring GNOME configuration...")' 2>/dev/null || \
+        echo "⚠️ Please log out and back in manually."
+
+    echo "✅ GNOME restore complete!"
 }
 
-# --- FUNCTION: Verify Backup ---
-verify() {
-    echo "Initiating backup integrity verification..."
-    read -p "Enter path to your backup archive (.tar.gz): " ARCHIVE
-    if [ ! -f "$ARCHIVE" ]; then
-        echo "ERROR: Archive file not found!"; exit 1
-    fi
+# ====== MENU ======
+check_deps
+echo "======================================"
+echo " Fedora 43 GNOME Backup & Restore Tool"
+echo "======================================"
+echo "1) Backup GNOME"
+echo "2) Restore GNOME"
+echo "Choose option (1/2): "
+read -r CHOICE
 
-    REQUIRED=(dconf-gnome.conf extensions-list.txt wallpaper.png)
-    tar -tzf "$ARCHIVE" > /tmp/backup_contents.txt
-
-    for file in "${REQUIRED[@]}"; do
-        if grep -q "$file" /tmp/backup_contents.txt; then
-            echo "File present: $file"
-        else
-            echo "WARNING: Critical file missing: $file"
-        fi
-    done
-    echo "Verification complete."
-}
-
-# --- MAIN ENTRY ---
-case "$1" in
-    backup)
-        check_deps
-        backup ;;
-    restore)
-        check_deps
-        restore ;;
-    verify)
-        verify ;;
-    *)
-        echo "Usage: $0 [backup|restore|verify]"
-        exit 1 ;;
+case "$CHOICE" in
+    1) backup ;;
+    2) restore ;;
+    *) echo "Invalid option." ;;
 esac
-
