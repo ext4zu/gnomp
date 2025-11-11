@@ -1,4 +1,4 @@
-# GNOME Backup & Restore
+# gnomp - GNOME Backup & Restore Script
 
 A simple script to backup and restore GNOME settings, extensions, and their configurations. Supports both Wayland and X11 sessions.
 
